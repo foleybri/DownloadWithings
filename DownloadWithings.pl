@@ -7,8 +7,9 @@ use Net::OAuth::Client;
 use POSIX qw(strftime);
 use Excel::Writer::XLSX;
 use Config::Simple;
+use Carp;
 
-my $cfg = new Config::Simple( 'config_example.cfg' );
+my $cfg = new Config::Simple( 'config_private.cfg' );
 
 if ( !-d $cfg->param( 'backup_location' ) ) {
     croak( $cfg->param( 'backup_location' ) . "does not exist\n" );
