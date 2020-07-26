@@ -1,6 +1,6 @@
 ## Synopsis
 
-A simple perl script to download measurement data from a withings scale via their website API
+A simple perl script to download measurement data from a withings scale via their OAuth2 API
 
 Data is saved to an .xlsx file and contains these values (if available):
 * weight
@@ -15,9 +15,11 @@ It will also produce a couple of simple graphs plotting weight and BMI
 
 ## Usage
 
-* Sign up to withings OAuth API system here: http://oauth.withings.com/api
-* Make a note of all API keys and Secrets
-* Copy config\_example.cfg to config\_private.cfg and enter your userid, download location, and OAuth keys/secrets
+* Details of withings OAuth2 API are here: https://developer.withings.com/oauth2/
+* Sign up for a withings account (if you dont have one already): https://account.withings.com/connectionuser/account\_create
+* Sign up for a withings developer app: https://account.withings.com/partner/add\_oauth2
+    * You need to provide a redirect\_uri which is an https url that you control
+* Copy config\_example.cfg to config\_private.cfg and enter your download location, client id, consumer secret, and redirect\_uri
 * Run the script: `perl DownloadWithings.pl`
 * Exercise data will appear in: `backup_location`/data.xlsx
 
@@ -29,8 +31,7 @@ As with most of my data that is stored with cloud providers, I like to keep a lo
 
 ## API Reference
 
-* http://oauth.withings.com/api/doc
-* http://oauth.withings.com/api
+* https://developer.withings.com/oauth2/
 
 ## Author
 

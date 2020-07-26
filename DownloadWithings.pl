@@ -3,13 +3,16 @@
 use warnings;
 
 use JSON 2;
-use Net::OAuth::Client;
+use LWP::Authen::OAuth2;
 use POSIX qw(strftime);
 use Excel::Writer::XLSX;
 use Config::Simple;
 use Carp;
+use Term::ReadKey;
+use File::Slurp;
 
-my $cfg = new Config::Simple( 'config_private.cfg' );
+my $cfg         = new Config::Simple( 'config_private.cfg' );
+my $tokens_file = 'tokens.txt';
 
 if ( !-d $cfg->param( 'backup_location' ) ) {
     croak( $cfg->param( 'backup_location' ) . "does not exist\n" );
@@ -50,31 +53,69 @@ my @type_keys = keys %types;
 # 4 : The measuregroup has been entered manually during user creation (and may not be accurate)r
 # 5 : Measure auto, it's only for the Blood Pressure Monitor. This device can make many measures and computed the best value
 
-my $session = sub {
-    state( %session );
-    my $key = shift;
-    return $session{ $key } unless @_;
-    $session{ $key } = shift;
-};
+my $saved_tokens;
+if ( -f $tokens_file ) {
+    $saved_tokens = read_file( $tokens_file );
+}
 
-my $client = Net::OAuth::Client->new(
-    $cfg->param( 'api_key' ),
-    $cfg->param( 'secret' ),
-    site               => 'https://oauth.withings.com/',
-    request_token_path => '/account/request_token',
-    authorize_path     => '/account/authorize',
-    access_token_path  => '/account/access_token',
-    callback           => 'oob',
-    session            => $session,
+my $oauth2 = LWP::Authen::OAuth2->new(
+    client_id     => $cfg->param( 'clientid' ),
+    client_secret => $cfg->param( 'consumersecret' ),
+    redirect_uri  => $cfg->param( 'redirect_uri' ),
+
+    # the first authorization against withings (redirects user to vist an URL to grab auth code from withings)
+    authorization_endpoint        => ' https://account.withings.com/oauth2_user/authorize2',
+    authorization_required_params => [ 'client_id', 'state', 'scope', 'redirect_uri', 'response_type' ],
+    authorization_default_params  => { response_type => 'code', state => 'auth', scope => 'user.metrics' },
+
+    # get a token for API requests
+    token_string            => $saved_tokens,
+    token_endpoint          => 'https://account.withings.com/oauth2/token',
+    save_tokens             => \&save_tokens,
+    request_required_params => [ 'grant_type', 'client_id', 'client_secret', 'code', 'redirect_uri' ],
+    request_default_params => { grant_type => 'authorization_code' },
+
+    # refresh token if they have expired
+    refresh_required_params => [ 'grant_type', 'client_id', 'client_secret', 'refresh_token' ],
+    refresh_default_params => { grant_type => 'refresh_token' },
 );
 
-my $access_token = Net::OAuth::AccessToken->new(
-    client       => $client,
-    token        => $cfg->param( 'token' ),
-    token_secret => $cfg->param( 'tsecret' ),
-);
+# cache these in a file so we dont have to authorise against withings every time
+sub save_tokens {
+    my ( $token_string ) = @_;
 
-my $res = $access_token->get( "https://wbsapi.withings.net/measure?action=getmeas&category=1&userid=" . $cfg->param('userid') );
+    my $filename = $tokens_file;
+    open( my $fh, '>', $filename ) or die "Could not open file '$filename' $!";
+    print $fh $token_string;
+    close $fh;
+
+    print "saved new tokens!\n";
+}
+
+# If this is our first time, then do authorisation
+if ( !$oauth2->can_refresh_tokens ) {
+    my $url = $oauth2->authorization_url();
+    print "Visit this URL: $url and paste the code here\n";
+
+    my $code = '';
+    ReadMode( 'noecho' );
+    print "Enter Code: ";
+    chomp( $code = <STDIN> );
+    ReadMode( 'restore' );
+
+    $oauth2->request_tokens( code => $code );
+}
+
+if ( $oauth2->should_refresh() ) {
+    print "refreshing tokens\n";
+    $oauth2->request_tokens();
+}
+
+my $res = $oauth2->get( 'https://wbsapi.withings.net/measure?action=getmeas&category=1' );
+
+if ( !$res->is_success ) {
+    die $res->status_line;
+}
 
 my $payload = JSON->new->decode( $res->decoded_content );
 
@@ -93,6 +134,7 @@ my $workbook    = Excel::Writer::XLSX->new( $cfg->param( 'backup_location' ) . '
 my $worksheet   = $workbook->add_worksheet( 'Data' );
 my $date_format = $workbook->add_format( num_format => 'yyyy-mm-dd HH:mm' );
 $worksheet->set_column( 0, 0, 20 );
+$worksheet->freeze_panes( 1, 0 );
 
 my ( $row, $col, $last_recorded_height ) = ( 0, 0, 0 );
 
@@ -103,6 +145,9 @@ for my $type_key ( @type_keys ) {
     $worksheet->write_string( $row, $col++, $types{ $type_key } );
 }
 $worksheet->write_string( $row, $col++, 'BMI' );
+
+my $min_weight = 1000;
+my $max_weight = 0;
 
 # Data
 for my $date ( @dates ) {
@@ -129,6 +174,12 @@ for my $date ( @dates ) {
                 $this_weight = $measure->{ value } * ( 10**$measure->{ unit } );
             }
 
+            if ( $type_key == 1 || $type_key == 5 ) {
+                my $this = $measure->{ value } * ( 10**$measure->{ unit } );
+                if ( $this < $min_weight ) { $min_weight = $this; }
+                if ( $this > $max_weight ) { $max_weight = $this; }
+            }
+
             # API says: Value for the measure in S.I units (kilogram, meters, etc.). Value should be multiplied by 10 to the power of "unit" (see below) to get the real value.
             $worksheet->write_number( $row, $col++, $measure->{ value } * ( 10**$measure->{ unit } ) );
         }
@@ -148,7 +199,7 @@ $weight_chart->add_series( categories => [ 'Data', 1, $row, 0, 0 ], values => [ 
 $weight_chart->add_series( categories => [ 'Data', 1, $row, 0, 0 ], values => [ 'Data', 1, $row, 5, 5 ], name => 'Fat Free' );
 
 $weight_chart->set_x_axis( name => 'Date', date_axis => 1, num_format => 'yyyy-mm-dd' );
-$weight_chart->set_y_axis( name => 'kg' );
+$weight_chart->set_y_axis( name => 'kg', min => $min_weight, max => $max_weight );
 
 my $bmi_chart = $workbook->add_chart( type => 'scatter', subtype => 'straight_with_markers', name => 'BMI Graph' );
 $bmi_chart->add_series( categories => [ 'Data', 1, $row, 0, 0 ], values => [ 'Data', 1, $row, 8, 8 ], name => 'BMI' );
