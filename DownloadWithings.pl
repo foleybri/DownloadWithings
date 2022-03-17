@@ -3,13 +3,15 @@
 use warnings;
 
 use JSON 2;
-use LWP::Authen::OAuth2;
+use LWP::Authen::OAuth2 0.19;
+use LWP::Authen::OAuth2::ServiceProvider::Withings;
 use POSIX qw(strftime);
 use Excel::Writer::XLSX;
 use Config::Simple;
 use Carp;
 use Term::ReadKey;
 use File::Slurp;
+# use LWP::ConsoleLogger::Everywhere ();
 
 my $cfg         = new Config::Simple( 'config_private.cfg' );
 my $tokens_file = 'tokens.txt';
@@ -59,25 +61,13 @@ if ( -f $tokens_file ) {
 }
 
 my $oauth2 = LWP::Authen::OAuth2->new(
-    client_id     => $cfg->param( 'clientid' ),
-    client_secret => $cfg->param( 'consumersecret' ),
-    redirect_uri  => $cfg->param( 'redirect_uri' ),
+    service_provider => "Withings",
+    client_id        => $cfg->param( 'clientid' ),
+    client_secret    => $cfg->param( 'consumersecret' ),
+    redirect_uri     => $cfg->param( 'redirect_uri' ),
 
-    # the first authorization against withings (redirects user to vist an URL to grab auth code from withings)
-    authorization_endpoint        => ' https://account.withings.com/oauth2_user/authorize2',
-    authorization_required_params => [ 'client_id', 'state', 'scope', 'redirect_uri', 'response_type' ],
-    authorization_default_params  => { response_type => 'code', state => 'auth', scope => 'user.metrics' },
-
-    # get a token for API requests
-    token_string            => $saved_tokens,
-    token_endpoint          => 'https://account.withings.com/oauth2/token',
-    save_tokens             => \&save_tokens,
-    request_required_params => [ 'grant_type', 'client_id', 'client_secret', 'code', 'redirect_uri' ],
-    request_default_params => { grant_type => 'authorization_code' },
-
-    # refresh token if they have expired
-    refresh_required_params => [ 'grant_type', 'client_id', 'client_secret', 'refresh_token' ],
-    refresh_default_params => { grant_type => 'refresh_token' },
+    token_string => $saved_tokens,
+    save_tokens => \&save_tokens,
 );
 
 # cache these in a file so we dont have to authorise against withings every time
@@ -154,7 +144,7 @@ for my $date ( @dates ) {
     $row++;
     $col = 0;
     my $this_weight = 0;
-    my @groups = grep { $_->{ date } eq $date } @{ $payload->{ body }{ measuregrps } };
+    my @groups      = grep { $_->{ date } eq $date } @{ $payload->{ body }{ measuregrps } };
 
     my @measures;
     foreach my $group ( @groups ) {
